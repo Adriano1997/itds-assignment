@@ -158,183 +158,88 @@ def KL_divergence_continuous(p, q, a=-np.inf, b=np.inf):
     return result
 
 
-#!/usr/bin/env python3
-# Author: Adriano Marini
-# Modulo di supporto per l'Assignment 2 (classificatore di Bayes)
 
-import numpy as np
-import pandas as pd
+from scipy.stats import multivariate_normal
 
-
-def load_banknote_dataset(from_url=True, local_path="data_banknote_authentication.txt"):
+class GaussianBayesClassifier:
     """
-    Carica il dataset "Banknote Authentication" dell'UCI.
-
-    Ogni riga rappresenta una banconota:
-        - 4 feature reali (estratte da immagini / wavelet)
-        - 1 etichetta discreta (0 = autentica, 1 = falsa)
-
-    Parametri
-    ---------
-    from_url : bool
-        Se True scarica direttamente dal sito UCI.
-        Se False legge il file locale 'local_path'.
-    local_path : str
-        Percorso del file locale (se from_url=False).
-
-    Ritorna
-    -------
-    X : ndarray di shape (n_samples, 4)
-        Matrice delle feature continue.
-    y : ndarray di shape (n_samples,)
-        Vettore delle etichette (0/1).
+    Classificatore Bayesiano basato su stimatore di densità Gaussiana Multivariata.
+    Ideale per minimizzare il processing time in fase di test.
     """
-    feature_names = ["variance", "skewness", "curtosis", "entropy"]
-    columns = feature_names + ["class"]
+    def __init__(self):
+        self.model = {}
+        self.classes = None
 
-    if from_url:
-        # URL ufficiale del dataset UCI (formato CSV senza intestazione)
-        url = (
-            "https://archive.ics.uci.edu/ml/machine-learning-databases/"
-            "00267/data_banknote_authentication.txt"
-        )
-        df = pd.read_csv(url, header=None, names=columns)
-    else:
-        # Variante offline: leggo il file se già scaricato
-        df = pd.read_csv(local_path, header=None, names=columns)
-
-    # Estraggo solo le 4 feature continue e la colonna classe
-    X = df[feature_names].values.astype(float)
-    y = df["class"].values.astype(int)
-
-    return X, y
-
-
-def fit_gaussian_bayes(X_train, y_train):
-    """
-    Stima i parametri del classificatore di Bayes con modello
-    gaussiano multivariato per p(x | c).
-
-    Idea:
-    -----
-    Per ogni classe c:
-        - stimiamo la media mu_c (vettore R^d)
-        - stimiamo la matrice di covarianza Sigma_c (d x d)
-        - stimiamo la prior p(c) come frequenza relativa nel training set
-
-    Tutto viene impacchettato nel dizionario 'params', che poi
-    viene usato dalla funzione di predizione.
-    """
-    X_train = np.asarray(X_train)
-    y_train = np.asarray(y_train)
-
-    n_samples, n_features = X_train.shape
-    classes = np.unique(y_train)
-
-    # Dizionario che contiene TUTTO quello che serve al classificatore
-    params = {
-        "classes": classes,
-        "mean": {},        # mu_c
-        "inv_cov": {},     # Sigma_c^{-1}
-        "log_det_cov": {}, # log |Sigma_c|
-        "log_prior": {},   # log p(c)
-    }
-
-    for c in classes:
-        # Prendo solo le righe del training appartenenti alla classe c
-        Xc = X_train[y_train == c]
-
-        # p(c) stimata come frequenza: numero campioni in c / totale
-        prior = Xc.shape[0] / n_samples
-
-        # Media vettoriale sulle righe
-        mu_c = Xc.mean(axis=0)
-
-        # Covarianza d x d (rowvar=False => righe = osservazioni)
-        Sigma_c = np.cov(Xc, rowvar=False)
-
-        # Leggera regolarizzazione diagonale per evitare problemi
-        # di inversione se Sigma è quasi singolare
-        eps = 1e-6
-        Sigma_c = Sigma_c + eps * np.eye(n_features)
-
-        # Pre-calcolo di inverse e log-determinante: così la predizione
-        # su molti punti è più veloce (non ricalcolo tutto ogni volta)
-        inv_Sigma_c = np.linalg.inv(Sigma_c)
-        sign, logdet = np.linalg.slogdet(Sigma_c)
-
-        params["mean"][c] = mu_c
-        params["inv_cov"][c] = inv_Sigma_c
-        params["log_det_cov"][c] = logdet
-        params["log_prior"][c] = np.log(prior)
-
-    return params
-
-
-def _log_gaussian_pdf(x, mu, inv_cov, log_det_cov):
-    """
-    Valuta la log-pdf di una gaussiana multivariata N(mu, Sigma) in x.
-
-    Formula:
-        log p(x) = -1/2 [ d log(2π) + log |Sigma| + (x - mu)^T Sigma^{-1} (x - mu) ]
-
-    Lavoriamo direttamente in log per evitare problemi numerici
-    quando p(x) è molto piccolo.
-    """
-    x = np.asarray(x)
-    d = x.shape[-1]
-
-    diff = x - mu                       # x - mu
-    quad = diff.T @ inv_cov @ diff      # forma quadratica
-
-    return -0.5 * (d * np.log(2.0 * np.pi) + log_det_cov + quad)
-
-
-def bayes_predict_gaussian(X_test, params):
-    """
-    Classificatore di Bayes con pdf gaussiana multivariata.
-
-    Per ogni punto x nel test:
-        - calcola, per ogni classe c,
-              score_c = log p(c) + log p(x | c)
-        - sceglie la classe con score massimo.
-
-    Parametri
-    ---------
-    X_test : ndarray (n_test, d)
-        Campioni da classificare.
-    params : dict
-        Parametri stimati da 'fit_gaussian_bayes'.
-
-    Ritorna
-    -------
-    y_pred : ndarray (n_test,)
-        Etichette predette per il test set.
-    """
-    X_test = np.asarray(X_test)
-    n_samples = X_test.shape[0]
-    classes = params["classes"]
-
-    y_pred = np.zeros(n_samples, dtype=int)
-
-    for i in range(n_samples):
-        x = X_test[i]
-        scores = []  # lista temporanea degli score per ogni classe
-
-        for c in classes:
-            mu_c = params["mean"][c]
-            inv_cov_c = params["inv_cov"][c]
-            log_det_c = params["log_det_cov"][c]
-            log_prior_c = params["log_prior"][c]
-
-            # log p(x | c) tramite la gaussiana multivariata
-            log_lik = _log_gaussian_pdf(x, mu_c, inv_cov_c, log_det_c)
-
-            # log p(c) + log p(x | c) = log p(c, x) (a costante additiva)
-            scores.append(log_prior_c + log_lik)
-
-        # Prendo la classe con score massimo
-        best_class = classes[np.argmax(scores)]
-        y_pred[i] = best_class
-
-    return y_pred
+    def fit(self, X, y):
+        """
+        Fase di Training: stima i parametri della distribuzione per ogni classe.
+        
+        Args:
+            X (numpy array): Matrice delle feature (n_samples, n_features)
+            y (numpy array): Vettore delle etichette (n_samples)
+        """
+        self.classes = np.unique(y)
+        n_samples, n_features = X.shape
+        
+        for c in self.classes:
+            # Seleziona i dati appartenenti solo alla classe 'c'
+            X_c = X[y == c]
+            
+            # 1. Calcolo del Prior P(omega_i)
+            # Probabilità a priori che un dato appartenga alla classe c
+            prior = len(X_c) / n_samples
+            
+            # 2. Stima della Media mu (Mean Vector) - Slide MLE
+            mean = np.mean(X_c, axis=0)
+            
+            # 3. Stima della Covarianza Sigma (Covariance Matrix) - Slide MLE
+            # rowvar=False indica che le colonne sono le variabili
+            cov = np.cov(X_c, rowvar=False)
+            
+            # Gestione stabilità numerica: aggiunge un epsilon se la matrice è singolare
+            # (opzionale ma consigliato per evitare crash su dataset piccoli)
+            cov += np.eye(n_features) * 1e-6
+            
+            # Salviamo tutto nel modello
+            self.model[c] = {
+                'prior': prior,
+                'mean': mean,
+                'cov': cov,
+                # Pre-calcoliamo l'oggetto "congelato" per velocizzare la predizione
+                'dist': multivariate_normal(mean=mean, cov=cov)
+            }
+            
+    def predict(self, X):
+        """
+        Fase di Test: predice la classe usando la regola di Bayes.
+        Minimizza il processing time perché calcola solo la formula della gaussiana.
+        
+        Args:
+            X (numpy array): Dati di test (n_samples, n_features)
+        Returns:
+            predictions (numpy array): Classi predette
+        """
+        predictions = []
+        
+        for x in X:
+            posteriors = []
+            
+            for c in self.classes:
+                prior = self.model[c]['prior']
+                dist = self.model[c]['dist']
+                
+                # Calcolo della Likelihood p(x | omega_i)
+                # Formula della densità Gaussiana Multivariata
+                likelihood = dist.pdf(x)
+                
+                # Calcolo della Posteriori (non normalizzata)
+                # P(omega_i | x) ∝ p(x | omega_i) * P(omega_i)
+                posterior = likelihood * prior
+                posteriors.append(posterior)
+            
+            # Regola di decisione MAP (Maximum A Posteriori)
+            # Sceglie la classe con il valore più alto
+            predicted_class = self.classes[np.argmax(posteriors)]
+            predictions.append(predicted_class)
+            
+        return np.array(predictions)
