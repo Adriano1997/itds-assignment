@@ -162,21 +162,6 @@ def KL_divergence_continuous(p, q, a=-np.inf, b=np.inf):
 
     return result
 
-"""
-ITDS - Assignment: Bayes / Naive Bayes classifiers
-==================================================
-
-Contiene TUTTO ciò che serve per l'assignment:
-- Bayes classifier con stimatore pdf multivariato (Gaussiano full-cov)
-- Naive Bayes con stimatore pdf univariato (istogramma per feature)
-- Gaussian Naive Bayes (Gaussiano univariato indipendente per feature)
-- Split stratificato 50/50 per classe (come richiesto)
-- Accuracy, confusion matrix
-- Plot 2D (PCA) + decision regions
-- Accuratezza media su più run e comparazioni parametriche
-"""
-
-
 
 
 # ----------------------------
@@ -770,3 +755,318 @@ def plot_risultati_2d(
 
     ax.legend(loc="best")
     return ax
+# =============================================================================
+# ASSIGNMENT 
+# =============================================================================
+import numpy as np
+
+# =============================================================================
+# ASSIGNMENT 3 - KMEANS
+# =============================================================================
+# In questa sezione implemento:
+# - PUNTO 1: la funzione kmeans(D, G) che restituisce D1..DG (sub-matrici)
+# - PUNTO 3: la Total Cluster Entropy (TCE) per valutare il clustering
+# - PUNTO 6: PCA 2D solo per fare lo scatter plot
+# =============================================================================
+
+
+def _standardize_fit(X: np.ndarray):
+    """
+    Standardizzazione z-score (scelta pratica):
+    X_std = (X - mu) / sigma
+
+    La uso perché k-means usa distanze: se le feature hanno scale molto diverse,
+    una feature può dominare tutte le altre.
+    """
+    mu = np.mean(X, axis=0)
+    sigma = np.std(X, axis=0, ddof=0)
+    sigma[sigma == 0.0] = 1.0
+    return mu, sigma
+
+
+def _standardize_transform(X: np.ndarray, mu: np.ndarray, sigma: np.ndarray):
+    return (X - mu) / sigma
+
+
+def _dist_sqeuclid(X: np.ndarray, C: np.ndarray):
+    """
+    Distanza euclidea al quadrato tra ogni punto e ogni centroide.
+    Restituisce una matrice (n x G):
+      dist[i,k] = ||X[i] - C[k]||^2
+    """
+    n = X.shape[0]
+    G = C.shape[0]
+    dist = np.zeros((n, G), dtype=float)
+
+    for k in range(G):
+        diff = X - C[k]                # (n x d)
+        dist[:, k] = np.sum(diff * diff, axis=1)
+
+    return dist
+
+
+def _dist_l1(X: np.ndarray, C: np.ndarray):
+    """
+    Distanza Manhattan (L1) tra ogni punto e ogni centroide.
+    dist[i,k] = sum_j |X[i,j] - C[k,j]|
+    """
+    n = X.shape[0]
+    G = C.shape[0]
+    dist = np.zeros((n, G), dtype=float)
+
+    for k in range(G):
+        dist[:, k] = np.sum(np.abs(X - C[k]), axis=1)
+
+    return dist
+
+
+def _init_random(rng: np.random.Generator, X: np.ndarray, G: int):
+    """
+    PUNTO 4 (inizializzazione): strategia random
+    Scelgo G punti casuali come centroidi iniziali.
+    """
+    n = X.shape[0]
+    idx = rng.choice(n, size=G, replace=False)
+    return X[idx].copy()
+
+
+def _init_kmeanspp(rng: np.random.Generator, X: np.ndarray, G: int):
+    """
+    PUNTO 4 (inizializzazione): strategia k-means++
+    1) primo centroide random
+    2) i successivi scelti con probabilità proporzionale alla distanza^2 dal centroide più vicino
+    """
+    n, d = X.shape
+    C = np.zeros((G, d), dtype=float)
+
+    # primo centroide casuale
+    C[0] = X[rng.integers(0, n)]
+
+    # distanza^2 dal centroide più vicino (per ogni punto)
+    closest_sq = _dist_sqeuclid(X, C[0:1]).ravel()
+
+    for k in range(1, G):
+        s = float(np.sum(closest_sq))
+
+        if s <= 1e-12:
+            # caso degenerato: punti molto simili
+            C[k] = X[rng.integers(0, n)]
+        else:
+            probs = closest_sq / s
+            idx = rng.choice(n, p=probs)
+            C[k] = X[idx]
+
+        # aggiorno le distanze minime
+        new_sq = _dist_sqeuclid(X, C[k:k+1]).ravel()
+        closest_sq = np.minimum(closest_sq, new_sq)
+
+    return C
+
+
+def _update_centroids_mean(rng: np.random.Generator, X: np.ndarray, labels: np.ndarray, G: int):
+    """
+    PUNTO 5 (centroide): metodo "mean" -> k-means classico
+    Centroide = media dei punti assegnati al cluster.
+    """
+    d = X.shape[1]
+    C = np.zeros((G, d), dtype=float)
+
+    for k in range(G):
+        pts = X[labels == k]
+        if pts.shape[0] == 0:
+            # cluster vuoto: re-inizializzo il centroide con un punto casuale
+            C[k] = X[rng.integers(0, X.shape[0])]
+        else:
+            C[k] = np.mean(pts, axis=0)
+
+    return C
+
+
+def _update_centroids_median(rng: np.random.Generator, X: np.ndarray, labels: np.ndarray, G: int):
+    """
+    PUNTO 5 (centroide): metodo "median" -> k-medians
+    Centroide = mediana per feature dei punti assegnati al cluster.
+    """
+    d = X.shape[1]
+    C = np.zeros((G, d), dtype=float)
+
+    for k in range(G):
+        pts = X[labels == k]
+        if pts.shape[0] == 0:
+            C[k] = X[rng.integers(0, X.shape[0])]
+        else:
+            C[k] = np.median(pts, axis=0)
+
+    return C
+
+
+# =============================================================================
+# PUNTO 1) Funzione richiesta: kmeans(D, G) -> restituisce D1..DG
+# =============================================================================
+def kmeans(
+    D: np.ndarray,
+    G: int,
+    init: str = "kmeans++",            # PUNTO 4: "random" oppure "kmeans++"
+    centroid_method: str = "mean",     # PUNTO 5: "mean" oppure "median"
+    max_iter: int = 100,
+    n_init: int = 10,
+    seed=None,
+    standardize: bool = True
+):
+    """
+    PUNTO 1 (richiesta traccia):
+    Implemento una funzione chiamata kmeans che:
+    - prende in input una matrice dati D e un intero G
+    - restituisce G matrici D1..DG come risultato del clustering
+
+    Scelte pratiche aggiuntive (per rendere il metodo robusto):
+    - init: strategia di inizializzazione (PUNTO 4)
+    - centroid_method: come calcolo il centroide (PUNTO 5)
+    - n_init: riparto più volte e tengo la migliore (standard per k-means)
+    - seed: se lo imposto, rendo riproducibile l’esperimento; se None, ogni run può cambiare
+    """
+
+    X = np.asarray(D, dtype=float)
+    n, d = X.shape
+
+    if G <= 0:
+        raise ValueError("G deve essere >= 1")
+    if G > n:
+        raise ValueError("G non può essere maggiore del numero di campioni")
+
+    # RNG: seed=None => risultati non riproducibili (ma in media buoni con n_init alto)
+    rng_master = np.random.default_rng(seed)
+
+    # Standardizzazione (consigliata)
+    if standardize:
+        mu, sigma = _standardize_fit(X)
+        Xp = _standardize_transform(X, mu, sigma)
+    else:
+        Xp = X
+
+    best_labels = None
+    best_centroids = None
+    best_obj = np.inf
+    best_iter = 0
+
+    # Riparto n_init volte: tengo la soluzione migliore (objective minima)
+    for _ in range(n_init):
+        rng = np.random.default_rng(rng_master.integers(0, 2**31 - 1))
+
+        # --- PUNTO 4: inizializzazione centroidi ---
+        if init == "random":
+            C = _init_random(rng, Xp, G)
+        elif init == "kmeans++":
+            C = _init_kmeanspp(rng, Xp, G)
+        else:
+            raise ValueError("init deve essere 'random' o 'kmeans++'")
+
+        labels = np.full(n, -1, dtype=int)
+
+        # --- ciclo k-means: assignment + update ---
+        for it in range(1, max_iter + 1):
+            # Assignment step
+            if centroid_method == "mean":
+                dist = _dist_sqeuclid(Xp, C)
+            elif centroid_method == "median":
+                dist = _dist_l1(Xp, C)
+            else:
+                raise ValueError("centroid_method deve essere 'mean' o 'median'")
+
+            new_labels = np.argmin(dist, axis=1)
+
+            # Stop se non cambia più nulla
+            if it > 1 and np.array_equal(new_labels, labels):
+                labels = new_labels
+                break
+
+            labels = new_labels
+
+            # Update step (PUNTO 5)
+            if centroid_method == "mean":
+                C = _update_centroids_mean(rng, Xp, labels, G)
+            else:
+                C = _update_centroids_median(rng, Xp, labels, G)
+
+        # Calcolo objective per scegliere la migliore run
+        if centroid_method == "mean":
+            dist = _dist_sqeuclid(Xp, C)
+            obj = float(np.sum(dist[np.arange(n), labels]))      # SSE
+        else:
+            dist = _dist_l1(Xp, C)
+            obj = float(np.sum(dist[np.arange(n), labels]))      # L1 cost
+
+        if obj < best_obj:
+            best_obj = obj
+            best_labels = labels.copy()
+            best_centroids = C.copy()
+            best_iter = it
+
+    # Costruisco D1..DG nello spazio ORIGINALE (richiesta della traccia)
+    clusters = [X[best_labels == k] for k in range(G)]
+
+    # La traccia chiede solo D1..DG; però per i test mi serve anche labels/centroidi.
+    # Quindi ritorno una tupla: (clusters, labels, centroids, n_iter, objective).
+    return clusters, best_labels, best_centroids, best_iter, best_obj
+
+
+# =============================================================================
+# PUNTO 3) Valutazione con Total Cluster Entropy (TCE)
+# =============================================================================
+def total_cluster_entropy(cluster_labels: np.ndarray, class_labels: np.ndarray, G: int):
+    """
+    PUNTO 3:
+    Valuto il clustering con la Total Cluster Entropy (TCE):
+      TCE = (1/n) * sum_k [ n_k * H_k ]
+    dove H_k è l’entropia della distribuzione delle classi vere dentro il cluster k.
+
+    Più TCE è basso => cluster più “puri” rispetto alle classi vere.
+    """
+    z = np.asarray(cluster_labels).ravel()
+    y = np.asarray(class_labels).ravel()
+
+    if z.shape[0] != y.shape[0]:
+        raise ValueError("cluster_labels e class_labels devono avere stessa lunghezza")
+
+    n = z.shape[0]
+    classes = np.unique(y)
+    idx = {c: i for i, c in enumerate(classes)}
+
+    tce = 0.0
+    for k in range(G):
+        mask = (z == k)
+        nk = int(np.sum(mask))
+        if nk == 0:
+            continue
+
+        counts = np.zeros(len(classes), dtype=float)
+        for lab in y[mask]:
+            counts[idx[lab]] += 1.0
+
+        # Entropia del cluster k
+        s = float(np.sum(counts))
+        p = counts / s
+        p = p[p > 0]
+        Hk = float(-np.sum(p * np.log2(p)))
+
+        tce += nk * Hk
+
+    return float(tce / n)
+
+
+# =============================================================================
+# PUNTO 6) PCA 2D per scatter plot (solo visualizzazione)
+# =============================================================================
+def pca_2d(X: np.ndarray):
+    """
+    PUNTO 6:
+    PCA 2D per visualizzare dati ad alta dimensione.
+    PCA1 e PCA2 sono le prime due componenti principali.
+    """
+    X = np.asarray(X, dtype=float)
+    mu = np.mean(X, axis=0)
+    Xc = X - mu
+    _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
+    W = Vt[:2].T
+    Z = Xc @ W
+    return Z
