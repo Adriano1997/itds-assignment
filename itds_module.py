@@ -239,7 +239,7 @@ def stratified_split_half_per_class(
 
 def standardize_fit(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     mu = np.mean(X, axis=0)
-    sigma = np.std(X, axis=0, ddof=0)
+    sigma = np.std(X, axis=0, ddof=1)
     sigma = np.where(sigma == 0.0, 1.0, sigma)
     return mu, sigma
 
@@ -303,7 +303,7 @@ def train_bayes_gaussian_multivariate(
         priors[k] = len(Xc) / n
         means[k] = np.mean(Xc, axis=0)
 
-        cov = np.cov(Xc, rowvar=False, ddof=0)
+        cov = np.cov(Xc, rowvar=False, ddof=1)
         cov = np.asarray(cov, dtype=float) + reg_eps * np.eye(d)
 
         covs[k] = cov
@@ -352,31 +352,57 @@ def predict_bayes_gaussian_multivariate(
 # 2) Naive Bayes Histogram (univariate pdf estimator)
 # ----------------------------
 
+
 @dataclass
 class NaiveBayesHistogramModel:
     classes_: np.ndarray
-    priors_: np.ndarray
-    edges_: List[List[np.ndarray]]
-    log_probs_: List[List[np.ndarray]]
+    priors_: np.ndarray                  # shape (K,)
+    edges_global_: List[np.ndarray]      # lista di d array di edges (uguali per tutte le classi)
+    log_densities_: List[List[np.ndarray]]  # log_densities_[k][j] -> log f bin (len = n_bins)
     n_bins_: int
     alpha_: float
 
 
-def _fit_hist_1d(x: np.ndarray, n_bins: int) -> np.ndarray:
+def _fit_hist_edges_global(x: np.ndarray, n_bins: int) -> np.ndarray:
+    """
+    Crea edges GLOBALI per una feature:
+    - stessi edges per tutte le classi (coerente con confronto di pdf per classe)
+    """
     x = np.asarray(x, dtype=float)
     xmin = float(np.min(x))
     xmax = float(np.max(x))
+
+    # Evito bin di larghezza zero
     if xmin == xmax:
         xmin -= 1e-6
         xmax += 1e-6
-    return np.linspace(xmin, xmax, n_bins + 1)
+
+    # Scelgo edges equispaziati (semplice e trasparente)
+    edges = np.linspace(xmin, xmax, n_bins + 1)
+    return edges
 
 
-def _hist_log_probs(x: np.ndarray, edges: np.ndarray, alpha: float) -> np.ndarray:
+def _hist_log_densities(x: np.ndarray, edges: np.ndarray, alpha: float) -> np.ndarray:
+    """
+    Stima della DENSITÀ per bin (pdf a tratti costante):
+      1) Stimo P(bin | classe) con smoothing (alpha)
+      2) Converto in densità: f ≈ P(bin)/width(bin)
+      3) Ritorno log densità per stabilità numerica
+    """
     counts, _ = np.histogram(x, bins=edges)
     counts = counts.astype(float)
-    probs = (counts + alpha) / (np.sum(counts) + alpha * len(counts))
-    return np.log(probs + 1e-300)
+
+    B = len(edges) - 1                 # numero bin
+    widths = np.diff(edges)            # larghezze bin (Δ)
+
+    # Probabilità per bin (con smoothing tipo Laplace)
+    probs = (counts + alpha) / (np.sum(counts) + alpha * B)
+
+    # Conversione a densità: f ≈ P(bin)/Δ
+    # (così ottengo una vera p.d.f. univariata, come richiesto)
+    densities = probs / widths
+
+    return np.log(densities + 1e-300)
 
 
 def train_naive_bayes_histogram(
@@ -386,9 +412,17 @@ def train_naive_bayes_histogram(
     alpha: float = 1.0,
     use_standardization: bool = True,
 ) -> Tuple[NaiveBayesHistogramModel, Dict[str, np.ndarray]]:
+    """
+    Naive Bayes con stimatore univariato a istogrammi.
+
+    VERSIONE "PROF":
+    - edges GLOBALI per feature (uguali per tutte le classi)
+    - stima di densità per bin: f ≈ P(bin|c)/Δ
+    """
     X_train = np.asarray(X_train, dtype=float)
     y_train = np.asarray(y_train)
 
+    # Pre-processing (opzionale): standardizzazione
     preprocess: Dict[str, np.ndarray] = {}
     X_proc = X_train
     if use_standardization:
@@ -401,23 +435,30 @@ def train_naive_bayes_histogram(
     K = len(classes)
     n, d = X_proc.shape
 
+    # Prior P(c)
     priors = np.zeros(K, dtype=float)
-    edges: List[List[np.ndarray]] = [[None for _ in range(d)] for _ in range(K)]  # type: ignore
-    log_probs: List[List[np.ndarray]] = [[None for _ in range(d)] for _ in range(K)]  # type: ignore
+
+    # Edges globali per ogni feature (d liste)
+    edges_global: List[np.ndarray] = []
+    for j in range(d):
+        edges_global.append(_fit_hist_edges_global(X_proc[:, j], n_bins))
+
+    # log_densities_[k][j] = log densità (pdf) dei bin della feature j per classe k
+    log_densities: List[List[np.ndarray]] = [[None for _ in range(d)] for _ in range(K)]  # type: ignore
 
     for k, c in enumerate(classes):
         Xc = X_proc[y_train == c]
         priors[k] = len(Xc) / n
+
         for j in range(d):
-            e = _fit_hist_1d(Xc[:, j], n_bins)
-            edges[k][j] = e
-            log_probs[k][j] = _hist_log_probs(Xc[:, j], e, alpha=alpha)
+            edges = edges_global[j]
+            log_densities[k][j] = _hist_log_densities(Xc[:, j], edges, alpha=alpha)
 
     model = NaiveBayesHistogramModel(
         classes_=classes,
         priors_=priors,
-        edges_=edges,
-        log_probs_=log_probs,
+        edges_global_=edges_global,
+        log_densities_=log_densities,
         n_bins_=n_bins,
         alpha_=alpha,
     )
@@ -425,6 +466,10 @@ def train_naive_bayes_histogram(
 
 
 def _bin_index(x: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """
+    Restituisce l’indice del bin per ogni x:
+    - clip ai bordi per valori fuori range
+    """
     idx = np.digitize(x, edges) - 1
     return np.clip(idx, 0, len(edges) - 2)
 
@@ -434,6 +479,10 @@ def predict_naive_bayes_histogram(
     X: np.ndarray,
     preprocess: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
+    """
+    Predizione Naive Bayes istogramma:
+    log P(c|x) ∝ log P(c) + Σ_j log f_j(x_j | c)
+    """
     X = np.asarray(X, dtype=float)
     X_proc = X
     if preprocess is not None and "mu" in preprocess and "sigma" in preprocess:
@@ -443,16 +492,22 @@ def predict_naive_bayes_histogram(
     K = len(model.classes_)
 
     log_post = np.zeros((n, K), dtype=float)
+
     for k in range(K):
+        # log prior
         lp = np.full(n, np.log(model.priors_[k] + 1e-300), dtype=float)
+
+        # somma dei log delle densità univariate (assunzione naive)
         for j in range(d):
-            edges = model.edges_[k][j]
-            logp_bins = model.log_probs_[k][j]
+            edges = model.edges_global_[j]
+            logdens_bins = model.log_densities_[k][j]
             idx = _bin_index(X_proc[:, j], edges)
-            lp += logp_bins[idx]
+            lp += logdens_bins[idx]
+
         log_post[:, k] = lp
 
     return model.classes_[np.argmax(log_post, axis=1)]
+
 
 
 # ----------------------------
@@ -497,7 +552,7 @@ def train_gaussian_naive_bayes(
         Xc = X_proc[y_train == c]
         priors[k] = len(Xc) / n
         means[k] = np.mean(Xc, axis=0)
-        vars_[k] = np.var(Xc, axis=0, ddof=0) + reg_eps
+        vars_[k] = np.var(Xc, axis=0, ddof=1) + reg_eps
 
     return GaussianNaiveBayesModel(classes_=classes, priors_=priors, means_=means, vars_=vars_, reg_eps_=reg_eps), preprocess
 
@@ -694,7 +749,7 @@ def plot_risultati_2d(
         # Etichetta tipo: "Reale 1, Pred 2"
         lab = f"Reale {c_reale+1}, Pred {c_pred+1}"
 
-        # Attenzione: marker 'x' è “unfilled”, se metti edgecolors può uscire warning.
+        
         mk = marker_pred.get(c_pred, "o")
         col = colori_reale.get(c_reale, "gray")
 
