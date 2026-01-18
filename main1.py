@@ -215,9 +215,9 @@ def demo_mutual_information():
     print(f"p(X) = {pX3}")
     print(f"p(Y) = {pY3}")
     print(f"I(X;Y) = {I3:.4f} bit")
-    # Atteso: I(X;Y) = 1 bit (massima informazione condivisa per variabili binarie)
+ 
 
-    print()  # riga vuota finale
+    print() 
 
 demo_mutual_information()
 def demo_KL_discrete():
@@ -389,7 +389,7 @@ def analyze_vs_mu(mu1=0.0, sigma1=1.0, sigma2=1.0,
         a = min(mu1, mu2) - 6 * sigma_max
         b = max(mu1, mu2) + 6 * sigma_max
 
-        # Calcolo numericamente il KL usando la tua funzione
+        # Calcolo numericamente il KL usando la funzione
         KL = KL_divergence_continuous(p, q, a, b)
 
         # Aggiungo alla lista
@@ -538,7 +538,7 @@ def entropy_iris_features():
         unique, counts = np.unique(feature, return_counts=True)
         pmf = counts / counts.sum()
 
-        # Calcolo entropia usando LA TUA funzione
+        # Calcolo entropia 
         H = entropy(pmf)
 
         entropies[feature_names[i]] = H
@@ -596,7 +596,7 @@ def mutual_information_iris():
             py_vals, py_counts = np.unique(Xj, return_counts=True)
             pY = py_counts / py_counts.sum()
 
-            # joint pmf in matrice (serve per mutual_information)
+            # joint pmf in matrice 
             joint_matrix = np.zeros((len(px_vals), len(py_vals)))
 
             for (xv, yv), p in zip(joint, joint_pmf):
@@ -604,7 +604,7 @@ def mutual_information_iris():
                 iy = np.where(py_vals == yv)[0][0]
                 joint_matrix[ix, iy] = p
 
-            # mutual information (usiamo la tua funzione)
+            # mutual information 
             MI = mutual_information(joint_matrix, pX, pY)
 
             fname = (feature_names[i], feature_names[j])
@@ -639,7 +639,6 @@ def entropy_overall_iris():
     iris = load_iris()
     X = iris.data                  # shape (150, 4)
 
-    # Discretizzazione (come nelle parti precedenti):
     # arrotondo i float e li trasformo in interi
     X_discrete = np.round(X).astype(int)
 
@@ -652,12 +651,12 @@ def entropy_overall_iris():
     # Probabilità delle combinazioni (PMF congiunta)
     pmf_joint = counts / counts.sum()
 
-    # Entropia usando la tua funzione entropy(p)
+    # Entropia usando funzione entropy(p)
     H_dataset = entropy(pmf_joint)
 
     print(f"\nEntropy complessiva dell'Iris (dopo discretizzazione): {H_dataset:.4f} bit")
 
-    # Se ti servono anche le combinazioni e le loro probabilità, le ritorni
+    
     return H_dataset, unique_rows, pmf_joint
 
 
