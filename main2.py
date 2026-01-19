@@ -1,33 +1,4 @@
-"""
-ITDS - main2.py (TEST COMPLETI ASSIGNMENT)
-=========================================
 
-Questo script implementa TUTTI i punti richiesti dalla traccia:
-
-1) Selezione dataset con feature continue e classe discreta:
-   - Wine dataset (sklearn): 178 campioni, 13 feature, 3 classi
-
-2) Classificatore Bayes con stimatore pdf multivariato:
-   - Gaussiano multivariato per classe (covarianza piena)
-
-3) Naive Bayes con stimatore pdf univariato:
-   - Istogrammi per feature e per classe (parametri: bins, alpha smoothing)
-
-4) Gaussian Naive Bayes:
-   - Feature indipendenti Gaussiane univariate per classe (parametro: reg_eps)
-
-5) Accuratezza media (split 50/50 per classe) su più run
-
-6) Confronto accuratezze medie variando parametri degli stimatori pdf
-   - Bayes MVN: reg_eps
-   - Gaussian NB: reg_eps
-   - NB Istogramma: bins e alpha
-
-In più (utile e richiesto nella pratica):
-- Confusion matrix per ciascun classificatore (sul singolo split)
-- Grafici 2D stile richiesto: colore=classe reale, marker=classe predetta
-  (esempio: alcohol vs malic_acid)
-"""
 
 from __future__ import annotations
 
